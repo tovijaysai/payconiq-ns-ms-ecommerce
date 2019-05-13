@@ -1,0 +1,1714 @@
+package com.payconiq.ecommerce;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication(scanBasePackages = { "com.payconiq.ecommerce"}) 
+public class EcommerceApp {
+	public static void main(String[] args) {
+		SpringApplication.run(EcommerceApp.class, args);
+	}
+}
+-----
+
+package com.payconiq.ecommerce.beans;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import static com.payconiq.ecommerce.util.EcommerceConstants.*;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+@AllArgsConstructor
+@Builder
+@NoArgsConstructor
+@JsonIgnoreProperties({ "statusCode" })
+@Data
+@ToString
+public class ErrorDetails {
+	private String code;
+	private String description;
+	private Integer priority;
+	private String severity;
+	private String system;
+	private String interfaceName;
+	private String statusCode;
+
+	public ErrorDetails(String system, String interfaceName, String statusCode, String description) {
+		super();
+		this.description = description;
+		this.system = system;
+		this.interfaceName = interfaceName;
+		this.statusCode = statusCode;
+		this.priority = DEFAULT_PRIORITY;
+		this.severity = DEFAULT_SEVERITY;
+	}
+
+}
+---------
+package com.payconiq.ecommerce.beans;
+
+import javax.validation.constraints.NotBlank;
+import javax.validation.constraints.NotNull;
+
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+
+@Data
+@ToString
+@NoArgsConstructor
+@AllArgsConstructor(access = AccessLevel.PUBLIC)
+
+public class Stock {
+
+	private Long id;
+	@NotNull
+	@NotBlank
+	private String name;
+	@NotNull
+	private Double currentPrice;
+	private String timestamp;
+
+	@Override
+	public boolean equals(Object obj) {
+		if (this == obj)
+			return true;
+		if (obj == null)
+			return false;
+		if (getClass() != obj.getClass())
+			return false;
+		Stock other = (Stock) obj;
+		if (id == null) {
+			if (other.id != null)
+				return false;
+		} else if (!id.equals(other.id))
+			return false;
+		return true;
+	}
+
+	@Override
+	public int hashCode() {
+		final int prime = 31;
+		int result = 1;
+		result = prime * result + ((id == null) ? 0 : id.hashCode());
+		return result;
+	}
+
+}
+----
+
+package com.payconiq.ecommerce.commons;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target({ElementType.METHOD, ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface PerfLog {
+}
+
+---
+
+package com.payconiq.ecommerce.commons;
+
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Pointcut;
+import org.springframework.context.annotation.EnableAspectJAutoProxy;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StopWatch;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Component
+@EnableAspectJAutoProxy
+@Aspect
+@Slf4j
+public class PerfMetricsConfiguration {
+
+	private static final String LOG_MESSAGE_FORMAT = "{}.{} execution time: {}ms";
+	
+    @Pointcut("execution(@PerfLog * com.payconiq..*.*(..))")
+    public void isAnnotated() {}
+    
+    @Around("isAnnotated()")
+    public Object logPerformanceMetrics(ProceedingJoinPoint joinPoint ) throws Throwable {
+    	StopWatch stopWatch = new StopWatch();
+    	stopWatch.start();
+    	Object returnValue = null;
+    	try {
+    		returnValue = joinPoint.proceed();
+    	} finally {
+	    	stopWatch.stop();
+	    	logExecutionTime(joinPoint, stopWatch); 
+	    }
+    	return returnValue; 
+    }
+    
+    private void logExecutionTime(ProceedingJoinPoint joinPoint, StopWatch stopWatch) {
+    	log.info(LOG_MESSAGE_FORMAT, joinPoint.getTarget().getClass().getName(), joinPoint.getSignature().getName(), stopWatch.getTotalTimeMillis());
+    }
+}
+
+----
+
+package com.payconiq.ecommerce.controller;
+
+import static com.payconiq.ecommerce.util.EcommerceConstants.*;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
+import org.springframework.validation.ObjectError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+import com.payconiq.ecommerce.beans.ErrorDetails;
+import com.payconiq.ecommerce.exception.EcommerceException;
+import com.payconiq.ecommerce.util.EcommerceLogConstants;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@RestController
+@ControllerAdvice(annotations = RestController.class)
+public class CommonsAdviceController extends ResponseEntityExceptionHandler {
+
+	@ExceptionHandler(ResourceAccessException.class)
+	@ResponseBody
+	public ResponseEntity<?> handleException(ResourceAccessException e, WebRequest request) {
+		log.error(EcommerceLogConstants.ABORT_REQ, e.getMessage(), request, e);
+		final ErrorDetails errorDetails = new ErrorDetails(MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME), null,
+				e.getMessage().split(";")[0]);
+		return new ResponseEntity<>(errorDetails, HttpStatus.BAD_REQUEST);
+
+	}
+
+	@ExceptionHandler(EcommerceException.class)
+	@ResponseBody
+	public ResponseEntity<?> handleException(EcommerceException e, WebRequest request) {
+
+		log.error(EcommerceLogConstants.ABORT_REQ, e.getMessage(), request, e);
+
+		final ErrorDetails errorDetails = new ErrorDetails(MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME), null,
+				e.getMessage());
+		return new ResponseEntity<>(errorDetails, HttpStatus.INTERNAL_SERVER_ERROR);
+
+	}
+
+	@ExceptionHandler({ IOException.class, Exception.class })
+	@ResponseBody
+	public ResponseEntity<?> handleGeneralException(Exception e, WebRequest request) {
+		log.error(EcommerceLogConstants.ABORT_REQ, e.getMessage(), request, e);
+		final ErrorDetails errorDetails = new ErrorDetails(MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME), null,
+				e.getMessage().split(";")[0]);
+		return new ResponseEntity<>(errorDetails, HttpStatus.INTERNAL_SERVER_ERROR);
+	}
+
+	@Override
+	protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException e,
+			HttpHeaders headers, HttpStatus status, WebRequest request) {
+		log.error(EcommerceLogConstants.ABORT_REQ, e.getMessage(), request, e);
+
+		final List<String> errors = new ArrayList<>();
+		for (final FieldError error : e.getBindingResult().getFieldErrors()) {
+			errors.add(error.getField() + ": " + error.getDefaultMessage());
+		}
+		for (final ObjectError error : e.getBindingResult().getGlobalErrors()) {
+			errors.add(error.getObjectName() + ": " + error.getDefaultMessage());
+		}
+
+		final ErrorDetails errorDetails = new ErrorDetails(MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME), null,
+				String.join(", ", errors));
+		return handleExceptionInternal(e, errorDetails, headers, status, request);
+	}
+
+	@Override
+	protected ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException e,
+			HttpHeaders headers, HttpStatus status, WebRequest request) {
+		log.error(EcommerceLogConstants.ABORT_REQ, e.getMessage(), request, e);
+		final ErrorDetails errorDetails = new ErrorDetails(MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME), null,
+				e.getMessage().split(";")[0]);
+		return handleExceptionInternal(e, errorDetails, headers, status, request);
+	}
+}
+------
+
+package com.payconiq.ecommerce.controller;
+
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.ModelMap;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+
+@Controller
+public class EcommerceAppController {
+
+	@RequestMapping("/")
+	String home(ModelMap modal) {
+		modal.addAttribute("title","Ecommerce App");
+		return "index";
+	}
+
+	@RequestMapping("/partials/{page}")
+	String partialHandler(@PathVariable("page") final String page) {
+		return page;
+	}
+
+}
+----
+package com.payconiq.ecommerce.controller;
+
+import static com.payconiq.ecommerce.util.EcommerceUtils.*;
+
+import static com.payconiq.ecommerce.util.EcommerceConstants.*;
+import static com.payconiq.ecommerce.util.EcommerceUtils.getCurrentDateTimeStr;
+
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
+
+import javax.validation.Valid;
+
+import org.jboss.logging.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import com.payconiq.ecommerce.beans.ErrorDetails;
+import com.payconiq.ecommerce.beans.Stock;
+import com.payconiq.ecommerce.commons.PerfLog;
+import com.payconiq.ecommerce.exception.EcommerceException;
+import com.payconiq.ecommerce.service.StockService;
+import com.payconiq.ecommerce.util.CustomErrorType;
+import com.payconiq.ecommerce.util.EcommerceConstants;
+import com.payconiq.ecommerce.util.EcommerceLogConstants;
+
+import lombok.extern.slf4j.Slf4j;
+
+@RestController
+@RequestMapping("/api")
+@Slf4j
+public class EcommerceRestApiController {
+
+	@Autowired
+	StockService stockService;
+
+	// -------------------Retrieve All Stocks---------------------------------------------
+
+	@PerfLog
+	@RequestMapping(value = "/stocks/", method = RequestMethod.GET)
+	public ResponseEntity<?> listAllStocks(@RequestHeader(value = UUID_HEADER, required = false) String uuid) {
+
+		log.debug(EcommerceLogConstants.IN_REQ, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME));
+		
+		Collection<Stock> stocks = null;
+		try {
+			stocks = stockService.findAllStocks();
+		} catch (IllegalArgumentException iae) {
+			log.error(EcommerceLogConstants.EX, "listAllStocks", "IllegalArgumentException", iae.getMessage(), iae,
+					iae);
+			return prepareResponse(iae, uuid);
+		} catch (Exception e) {
+			log.error(EcommerceLogConstants.EX, "listAllStocks", "Exception", e.getMessage(), e, e);
+			return prepareResponse(e, uuid);
+		}
+		log.debug(EcommerceLogConstants.IN_RES, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+				stocks);
+		return new ResponseEntity<Collection<Stock>>(stocks,addResponseHeaders(uuid), HttpStatus.OK);
+
+	}
+
+	// -------------------Retrieve Single Stock------------------------------------------
+
+	@PerfLog
+	@RequestMapping(value = "/stocks/{id}", method = RequestMethod.GET)
+	public ResponseEntity<?> getStock(@PathVariable("id") long id,
+			@RequestHeader(value = UUID_HEADER, required = false) String uuid) {
+		log.debug(EcommerceLogConstants.IN_REQ, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+				id);
+		Stock stock = null;
+		try {
+			stock = stockService.findById(id);
+			if (stock == null) {
+				log.error("Stock with id {} not found.", id);
+				return new ResponseEntity<>(new CustomErrorType("Stock with id " + id + " not found"),
+						HttpStatus.NOT_FOUND);
+			}
+		} catch (IllegalArgumentException iae) {
+			log.error(EcommerceLogConstants.EX, "getStock", "IllegalArgumentException", iae.getMessage(), iae, iae);
+			return prepareResponse(iae, uuid);
+		} catch (Exception e) {
+			log.error(EcommerceLogConstants.EX, "getStock", "Exception", e.getMessage(), e, e);
+			return prepareResponse(e, uuid);
+		}
+		log.debug(EcommerceLogConstants.IN_RES, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+				stock);
+		return new ResponseEntity<Stock>(stock,addResponseHeaders(uuid), HttpStatus.OK);
+	}
+
+	// -------------------Create a Stock-------------------------------------------
+
+	@PerfLog
+	@RequestMapping(value = "/stocks/", method = RequestMethod.POST)
+	public ResponseEntity<?> createStock(@RequestHeader(value = UUID_HEADER, required = false) String uuid,
+			@RequestBody @Valid Stock stock, UriComponentsBuilder ucBuilder) {
+		log.debug(EcommerceLogConstants.IN_REQ, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+				stock);
+		try {
+			if (stockService.isStockExist(stock)) {
+				log.error("Unable to create. A Stock with name {} already exist", stock.getName());
+				return new ResponseEntity<>(
+						new CustomErrorType(
+								"Unable to create. A Stock with name " + stock.getName() + " already exist."),
+						HttpStatus.CONFLICT);
+			}
+			stockService.saveStock(stock);
+			HttpHeaders headers = new HttpHeaders();
+			headers.setLocation(ucBuilder.path("/api/stocks/{id}").buildAndExpand(stock.getId()).toUri());
+			log.debug(EcommerceLogConstants.IN_RES, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+					HttpStatus.CREATED);
+			return new ResponseEntity<String>(headers, HttpStatus.CREATED);
+		} catch (IllegalArgumentException iae) {
+			log.error(EcommerceLogConstants.EX, "createStock", "IllegalArgumentException", iae.getMessage(), iae, iae);
+			return prepareResponse(iae, uuid);
+		} catch (Exception e) {
+			log.error(EcommerceLogConstants.EX, "createStock", "Exception", e.getMessage(), e, e);
+			return prepareResponse(e, uuid);
+		}
+		
+
+	}
+
+	// ------------------- Update a Stock ------------------------------------------------
+
+	
+	@PerfLog
+	@RequestMapping(value = "/stocks/{id}", method = RequestMethod.PUT)
+	public ResponseEntity<?> updateStock(@PathVariable("id") long id,
+			@RequestHeader(value = UUID_HEADER, required = false) String uuid, @RequestBody Stock stock) {
+
+		log.debug(EcommerceLogConstants.IN_REQ, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+				stock);
+		try {
+
+			Stock currentStock = stockService.findById(id);
+			if (currentStock == null) {
+				log.error("Unable to update. Stock with id {} not found.", id);
+				return new ResponseEntity<>(new CustomErrorType("Unable to upate. Stock with id " + id + " not found."),
+						HttpStatus.NOT_FOUND);
+			}
+			currentStock.setName(stock.getName());
+			currentStock.setCurrentPrice(stock.getCurrentPrice());
+			currentStock.setTimestamp(getCurrentDateTimeStr());
+
+			stockService.updateStock(currentStock);
+			log.debug(EcommerceLogConstants.IN_RES, MDC.get(SYSTEM_NAME), MDC.get(INTERFACE_NAME),
+					HttpStatus.OK);
+			return new ResponseEntity<Stock>(currentStock,addResponseHeaders(uuid), HttpStatus.OK);
+		} catch (IllegalArgumentException iae) {
+			log.error(EcommerceLogConstants.EX, "updateStock", "IllegalArgumentException", iae.getMessage(), iae, iae);
+			return prepareResponse(iae, uuid);
+		} catch (Exception e) {
+			log.error(EcommerceLogConstants.EX, "updateStock", "Exception", e.getMessage(), e, e);
+			return prepareResponse(e, uuid);
+		}
+
+	}
+
+	private ResponseEntity<?> prepareResponse(Throwable t, String uuid) {
+		HttpStatus httpStatus = null;
+
+		Set<ErrorDetails> errorDetails = null;
+		if (t instanceof IllegalArgumentException) {
+			httpStatus = HttpStatus.BAD_REQUEST;
+			errorDetails = new HashSet<>();
+			errorDetails.add(new ErrorDetails(null, null, null, t.getMessage()));
+		} else if (t instanceof EcommerceException) {
+			httpStatus = HttpStatus.INTERNAL_SERVER_ERROR;
+			EcommerceException pe = (EcommerceException) t;
+			errorDetails = pe.getErrors();
+		} else if (t instanceof Throwable) {
+			httpStatus = HttpStatus.INTERNAL_SERVER_ERROR;
+			errorDetails = new HashSet<>();
+			errorDetails.add(new ErrorDetails(null, null, null, t.getMessage()));
+		}
+		HttpHeaders respHeaders = addResponseHeaders(uuid);
+		return new ResponseEntity<>(errorDetails, respHeaders, httpStatus);
+
+	}
+
+}
+
+----
+
+package com.payconiq.ecommerce.exception;
+
+import java.util.HashSet;
+import java.util.Set;
+
+import org.springframework.util.CollectionUtils;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+import com.payconiq.ecommerce.beans.ErrorDetails;
+
+import lombok.Builder;
+import lombok.Data;
+import lombok.ToString;
+
+
+
+@Builder
+@Data
+@ToString
+@JsonIgnoreProperties({ "stackTrace", "cause", "suppressed", "localizedMessage", "message" })
+@JsonPropertyOrder({ "code", "description", "system", "interface", "severity", "priority" })
+final public class EcommerceException extends RuntimeException {
+	private static final long serialVersionUID = 1L;
+	Set<ErrorDetails> errors = new HashSet<ErrorDetails>();
+
+	public EcommerceException(Set<ErrorDetails> errors, Throwable cause) {
+		this.cause = cause;
+		if (!CollectionUtils.isEmpty(errors)) {
+			this.errors = errors;
+		}
+	}
+	public EcommerceException(ErrorDetails error, Throwable cause) {
+		this.cause = cause;
+		if (error != null) {
+			this.errors.add(error);
+		}
+	}
+	public EcommerceException(Set<ErrorDetails> errors, String message) {
+		super(message);
+		if (!CollectionUtils.isEmpty(errors)) {
+			this.errors= errors;
+		}
+	}
+	public EcommerceException(ErrorDetails error, String message) {
+		super(message);
+		if (error != null) {
+			this.errors.add(error);
+		}
+	}
+	
+	
+	@JsonIgnore
+	private Throwable cause;
+}
+-----
+
+package com.payconiq.ecommerce.interceptor;
+
+import java.util.UUID;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.MDC;
+import org.springframework.stereotype.Component;
+import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;
+
+import static com.payconiq.ecommerce.util.EcommerceConstants.*;
+
+@Component
+
+public class RequestInterceptor extends HandlerInterceptorAdapter {
+
+	@Override
+	public boolean preHandle(final HttpServletRequest request, final HttpServletResponse response, final Object object)
+			throws Exception {
+		super.preHandle(request, response, object);
+		String uuid = StringUtils.EMPTY;
+		if (StringUtils.isBlank(request.getHeader(UUID_HEADER))) {
+			uuid = UUID.randomUUID().toString();
+		} else {
+			uuid = request.getHeader(UUID_HEADER);
+		}
+		MDC.put(UUID_HEADER, uuid);
+		MDC.put(SYSTEM_NAME, "payconiq-nl-ms-ecommerce");
+		MDC.put(INTERFACE_NAME, request.getRequestURI());
+		return true;
+	}
+
+}
+
+----
+package com.payconiq.ecommerce.interceptor;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurerAdapter;
+
+@SuppressWarnings("deprecation")
+@Configuration
+public class RequestInterceptorConfig extends WebMvcConfigurerAdapter {
+
+	@Autowired
+	RequestInterceptor requestInterceptor;
+
+	@Override
+	public void addInterceptors(InterceptorRegistry registry) {
+		registry.addInterceptor(requestInterceptor);
+	}
+}
+-------
+
+
+package com.payconiq.ecommerce.interceptor;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.filter.CommonsRequestLoggingFilter;
+
+@Configuration
+public class RequestLoggingFilterConfig {
+
+	@Bean
+	public CommonsRequestLoggingFilter logFilter() {
+		CommonsRequestLoggingFilter filter = new CommonsRequestLoggingFilter();
+		filter.setIncludeQueryString(true);
+		filter.setIncludePayload(true);
+		filter.setMaxPayloadLength(10000);
+		filter.setIncludeHeaders(false);
+		filter.setAfterMessagePrefix("REQUEST DATA : ");
+		return filter;
+	}
+
+}
+
+
+--------
+
+package com.payconiq.ecommerce.repositories;
+
+import java.util.Collection;
+
+import com.payconiq.ecommerce.beans.Stock;
+
+public interface StockRepository {
+	Stock findByName(String name);
+	Stock findOne(Long id);
+	void save(Stock user);
+	Collection<Stock> findAll();
+}
+
+-----
+
+package com.payconiq.ecommerce.repositories;
+
+import static com.payconiq.ecommerce.util.EcommerceUtils.getCurrentDateTimeStr;
+
+import java.util.Collection;
+import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.springframework.stereotype.Component;
+
+import com.payconiq.ecommerce.beans.Stock;
+
+@Component("stockRepository")
+public class StockRepositoryImpl implements StockRepository {
+
+	ConcurrentHashMap<Long, Stock> stocks;
+
+	StockRepositoryImpl() {
+		stocks = new ConcurrentHashMap<>();
+		String currentDateTimeStr = getCurrentDateTimeStr();
+		Stock stock1 = new Stock(101l, "BNP", 201.8, currentDateTimeStr);
+		stocks.put(stock1.getId(), stock1);
+		Stock stock2 = new Stock(102l, "JPMC", 34.6, currentDateTimeStr);
+		stocks.put(stock2.getId(), stock2);
+		Stock stock3 = new Stock(104l, "BOA", 34.4, currentDateTimeStr);
+		stocks.put(stock3.getId(), stock3);
+		Stock stock4 = new Stock(105l, "UBS", 34.6, currentDateTimeStr);
+		stocks.put(stock4.getId(), stock4);
+		Stock stock5 = new Stock(109l, "ANZ", 122.6, currentDateTimeStr);
+		stocks.put(stock5.getId(), stock5);
+
+	}
+
+	@Override
+	public Stock findByName(String name) {
+		Stock stock = null;
+		Optional<Entry<Long, Stock>> result = this.stocks.entrySet().stream()
+				.filter(e -> e.getValue().getName().equals(name)).findAny();
+		if (result.isPresent()) {
+			return result.get().getValue();
+		}
+		return stock;
+	}
+
+	@Override
+	public Stock findOne(Long stockId) {
+		Stock stock = this.stocks.get(stockId);
+		return stock;
+	}
+
+	@Override
+	public void save(Stock newStock) {
+		this.stocks.put(newStock.getId(), newStock);
+	}
+
+	@Override
+	public Collection<Stock> findAll() {
+		Collection<Stock> values = this.stocks.values();
+		return values;
+	}
+
+}
+-------
+
+package com.payconiq.ecommerce.service;
+
+import java.util.Collection;
+
+import com.payconiq.ecommerce.beans.Stock;
+
+public interface StockService {
+
+	Stock findById(Long id);
+
+	Stock findByName(String name);
+
+	void saveStock(Stock stock);
+
+	void updateStock(Stock stock);
+
+	Collection<Stock> findAllStocks();
+
+	boolean isStockExist(Stock stock);
+}
+
+
+-----
+package com.payconiq.ecommerce.service;
+
+import static com.payconiq.ecommerce.util.EcommerceUtils.generateRandomNumber;
+import static com.payconiq.ecommerce.util.EcommerceUtils.getCurrentDateTimeStr;
+
+import java.util.Collection;
+
+import org.apache.commons.lang3.StringUtils;
+import org.jboss.logging.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.payconiq.ecommerce.beans.Stock;
+import com.payconiq.ecommerce.repositories.StockRepository;
+import com.payconiq.ecommerce.util.EcommerceConstants;
+import com.payconiq.ecommerce.util.EcommerceLogConstants;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Service("stockService")
+@Slf4j
+public class StockServiceImpl implements StockService {
+
+	@Autowired
+	private StockRepository stockRepository;
+
+	public Stock findById(Long id) {
+
+		log.debug(EcommerceLogConstants.OUT_REQ, EcommerceConstants.System.DB,
+				 "findById", id);
+		Stock stock = stockRepository.findOne(id);
+
+		log.debug(EcommerceLogConstants.OUT_RES, EcommerceConstants.System.DB,
+				 "findById", stock);
+		return stock;
+	}
+
+	public Stock findByName(String name) {
+		log.debug(EcommerceLogConstants.OUT_REQ, EcommerceConstants.System.DB,
+				 "findByName", name);
+		Stock stock = stockRepository.findByName(name);
+
+		log.debug(EcommerceLogConstants.OUT_RES, EcommerceConstants.System.DB,
+				 "findByName", stock);
+
+		return stock;
+	}
+
+	public void saveStock(Stock stock) {
+		log.debug(EcommerceLogConstants.OUT_REQ, EcommerceConstants.System.DB,
+				 "saveStock", stock);
+
+		if (stock.getId() == null) {
+			stock.setId(generateRandomNumber());
+		}
+		stock.setTimestamp(getCurrentDateTimeStr());
+		stockRepository.save(stock);
+		log.debug(EcommerceLogConstants.OUT_RES, EcommerceConstants.System.DB,
+				 "saveStock", "Success");
+	}
+
+	public void updateStock(Stock stock) {
+		log.debug(EcommerceLogConstants.OUT_REQ, EcommerceConstants.System.DB,
+				 "updateStock", stock);
+		saveStock(stock);
+		log.debug(EcommerceLogConstants.OUT_RES, EcommerceConstants.System.DB,
+				 "updateStock", "Success");
+	}
+
+	public Collection<Stock> findAllStocks() {
+		log.debug(EcommerceLogConstants.OUT_REQ, EcommerceConstants.System.DB,
+				 "findAllStocks", StringUtils.EMPTY);
+		Collection<Stock> stocks = stockRepository.findAll();
+		
+		log.debug(EcommerceLogConstants.OUT_RES, EcommerceConstants.System.DB,
+				 "findAllStocks", stocks);
+		return stocks;
+	}
+
+	public boolean isStockExist(Stock stock) {
+		log.debug(EcommerceLogConstants.OUT_REQ, EcommerceConstants.System.DB,
+				 "isStockExist", stock);
+		boolean isStockExists = findByName(stock.getName()) != null;
+
+		log.debug(EcommerceLogConstants.OUT_RES, EcommerceConstants.System.DB,
+				 "isStockExist", Boolean.valueOf(isStockExists));
+		return isStockExists;
+	}
+
+}
+
+
+----------
+package com.payconiq.ecommerce.util;
+
+
+public class CustomErrorType {
+
+    private String errorMessage;
+
+    public CustomErrorType(String errorMessage){
+        this.errorMessage = errorMessage;
+    }
+
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+}
+
+
+------
+
+package com.payconiq.ecommerce.util;
+
+public interface EcommerceConstants {
+
+	static final String UUID_HEADER = "uuid";
+	public String SYSTEM_NAME = "SYSTEM_NAME";
+	public String INTERFACE_NAME = "INTERFACE_NAMEID";
+
+	public static final String DEFAULT_SEVERITY = "Error";
+	public static final Integer DEFAULT_PRIORITY = 01;
+
+	public static enum System {
+		DB;
+	}
+
+}
+-----------
+
+package com.payconiq.ecommerce.util;
+
+public class EcommerceLogConstants {
+
+
+	
+	/*********************** following will be used for all LOG levels start *********************/
+	// Request-Response
+	public static final String IN_REQ = "Start inbound service: [{}] [{}]. Inbound Request: [{}]";
+	public static final String IN_RES = "End inbound service: [{}] [{}]. Inbound Response: [{}]";
+	public static final String OUT_REQ = "Start outbound service: [{}] [{}]. Outbound Request: [{}]";
+	public static final String OUT_RES = "End outbound service: [{}] [{}]. Outbound Response: [{}]";
+
+	// Exceptions
+	public static final String EX = "Exception occurred in functionality: [{}], possibly by: [{}]. Exception Message: [{}], Debug Info: [{}]";
+	public static final String ABORT_REQ = "Stopping Request flow. Exception Message: [{}], Debug Info: [{}]";
+
+	
+
+}
+-------
+
+package com.payconiq.ecommerce.util;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Random;
+
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.http.HttpHeaders;
+
+public class EcommerceUtils {
+
+	public static final String DEFAULT_DATE_FORMAT = "yyyy-MM-dd HH:mm:ss";
+
+	public static String getCurrentDateTimeStr() {
+
+		DateTimeFormatter formatter = DateTimeFormatter.ofPattern(DEFAULT_DATE_FORMAT);
+		LocalDateTime now = LocalDateTime.now();
+		String timestamp = now.format(formatter);
+		return timestamp;
+	}
+
+	public static long generateRandomNumber() {
+		long x = 1234567L;
+		long y = 23456789L;
+		Random r = new Random();
+		long number = x + ((long) (r.nextDouble() * (y - x)));
+		return number;
+	}
+
+	public static HttpHeaders addResponseHeaders(String uuid) {
+		HttpHeaders httpHeaders = new HttpHeaders();
+		if (StringUtils.isNoneBlank(uuid)) {
+			httpHeaders.add(EcommerceConstants.UUID_HEADER, uuid);
+		}
+		return httpHeaders;
+	}
+
+}
+-----
+
+---application.yml
+server:
+  port: 8080
+  servlet:
+    contextPath: /ecommerce
+  
+logging:
+    level:
+      org.springframework.web.filter.CommonsRequestLoggingFilter: DEBUG
+      com.payconiq.ecommerce: DEBUG
+ 
+---
+spring:
+  profiles: local, default
+
+---
+spring:
+  profiles: sit
+ 
+---
+spring:
+  profiles: uat
+    
+---
+spring:
+  profiles: prod
+----
+
+-------log4j2.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="DEBUG">
+	<Appenders>
+		<Console name="ConsoleAppender" target="SYSTEM_OUT" >
+			<PatternLayout
+				pattern="%d [%t] %-5level  [%X{uuid}]  %logger{36} - %msg%throwable %n" />
+		</Console>
+		<File name="FileAppender" fileName="logs/xmlfilelog.log">
+			<PatternLayout
+				pattern="%d [%t] %-5level %logger{36} - %msg%n%throwable" />
+		</File>
+	</Appenders>
+	<Loggers>
+		<AsyncRoot level="WARN" additivity="false">
+			<AppenderRef ref="ConsoleAppender" />
+		</AsyncRoot>
+		<AsyncLogger name="org.springframework" level="INFO" additivity="false">
+			<AppenderRef ref="ConsoleAppender" />
+		</AsyncLogger>
+		
+		<AsyncLogger name="com.payconiq.ecommerce" level="DEBUG" additivity="false">
+			<AppenderRef ref="ConsoleAppender" />
+		</AsyncLogger>
+		
+		
+	</Loggers>
+</Configuration>
+------------------
+
+package com.dbs.payconiq.ecommerce;
+
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import java.util.UUID;
+import org.junit.BeforeClass;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.junit4.SpringRunner;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.client.RestTemplate;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.payconiq.ecommerce.EcommerceApp;
+import com.payconiq.ecommerce.beans.Stock;
+import com.payconiq.ecommerce.service.StockService;
+
+@RunWith(SpringRunner.class)
+@SpringBootTest(
+	classes = {	EcommerceApp.class,
+			
+				}
+		)
+@TestPropertySource(
+	locations = { "classpath:application.yml"})
+@AutoConfigureMockMvc
+@ActiveProfiles( "test" )
+public class EcommerceRestApiControllerIntegrationTest {
+    
+	final String listStocksURI = "/api/stocks/";
+    final String crateStockURI = "/api/stocks/";
+    final String updateStockURI = "/api/stocks/{id}";
+    final String findStockURI = "/api/stocks/{id}";
+    
+	
+    
+	@Autowired
+    private MockMvc mvc;
+    
+	RestTemplate restTemplate = new RestTemplate();
+    
+	@Autowired
+	StockService stockService;
+
+	static ObjectMapper objectMapper = new ObjectMapper();
+    static Stock createStock;
+    static Stock updateStock;
+	@BeforeClass
+	public static void setup() {
+		try {
+			createStock = objectMapper.readValue(createStockReq, Stock.class);
+			updateStock = objectMapper.readValue(updateStockReq, Stock.class);
+		} catch(Exception e) {
+			e.printStackTrace();
+		}
+	}
+	
+	
+    final  Long stockId = 101l;
+    static HttpHeaders requestHeaders;
+    static String createStockReq="{\n" + 
+    		"        \"id\": 201,\n" + 
+    		"        \"name\": \"ADP\",\n" + 
+    		"        \"currentPrice\": 201.8,\n" + 
+    		"        \"timestamp\": \"2019-05-09 01:36:53\"\n" + 
+    		"	}";
+	static String updateStockReq="	{\n" + 
+			"		\"id\": 101,\n" + 
+			"        \"name\": \"BNP Fortis\",\n" + 
+			"        \"currentPrice\": 201.8,\n" + 
+			"        \"timestamp\": \"2019-05-09 01:36:53\"\n" + 
+			"	}";
+    
+    
+   private HttpHeaders getHeaders() {
+    	if (requestHeaders != null) {
+    		return requestHeaders;
+    	}
+    	requestHeaders= new HttpHeaders();
+    	requestHeaders.setContentType(MediaType.APPLICATION_JSON);
+    	requestHeaders.add("uuid", UUID.randomUUID().toString());
+    	return requestHeaders;
+    }
+    
+	
+   @Test
+   public void listStocksTest() throws Exception {
+   	HttpHeaders httpHeaders = getHeaders();
+   	mvc.perform(get(listStocksURI)
+       		.headers(httpHeaders))
+   			.andDo(print())
+   			.andExpect(status().is2xxSuccessful()
+       		);
+   }
+   
+	
+    @Test
+    public void createStockTest() throws Exception {
+
+    	HttpHeaders httpHeaders = getHeaders();
+    	mvc.perform(post(crateStockURI)
+        				.headers(httpHeaders)
+        				.content(objectMapper.writeValueAsString(createStock)))
+    					.andDo(print())
+    					.andExpect(status().is2xxSuccessful()
+    					);
+    }
+    
+
+    @Test
+    public void updateStockTest() throws Exception {
+
+    	HttpHeaders httpHeaders = getHeaders();
+    	mvc.perform(put(updateStockURI,stockId)
+        				.headers(httpHeaders)
+        				.content(objectMapper.writeValueAsString(updateStock))
+        				)
+    			.andDo(print())
+    			.andExpect(status().is2xxSuccessful()
+        		);
+    }
+    
+    
+    @Test
+    public void findStockTest() throws Exception {
+    	HttpHeaders httpHeaders = getHeaders();
+    	mvc.perform(get(findStockURI,stockId)
+        		.headers(httpHeaders))
+    			.andDo(print())
+    			.andExpect(status().is2xxSuccessful()
+        		);
+    }
+    
+    
+    //------------- -ve test cases  -----------------------------------
+    
+    @Test
+    public void createStock_409_http_status_Test() throws Exception {
+    	
+    	String createStockReq="{\n" + 
+        		"        \"id\": 201,\n" + 
+        		"        \"nam\": \"\",\n" + 
+        		"        \"currentPrice\": 201.8,\n" + 
+        		"        \"timestamp\": \"2019-05-09 01:36:53\"\n" + 
+        		"	}";
+
+    	HttpHeaders httpHeaders = getHeaders();
+    	mvc.perform(post(crateStockURI)
+        				.headers(httpHeaders)
+        				.content(createStockReq))
+    					.andDo(print())
+    					.andExpect(status().isBadRequest()
+    					);
+    }
+    
+    
+    @Test
+    public void updateStock_404_http_status_Test() throws Exception {
+    	
+    	
+    	 String updateStockReq="	{\n" + 
+    			"		\"id\": 1001,\n" + 
+    			"        \"name\": \"BNP Fortis\",\n" + 
+    			"        \"currentPrice\": 201.8,\n" + 
+    			"        \"timestamp\": \"2019-05-09 01:36:53\"\n" + 
+    			"	}";
+
+    	HttpHeaders httpHeaders = getHeaders();
+    	mvc.perform(put(updateStockURI,1001)
+        				.headers(httpHeaders)
+        				.content(updateStockReq)
+        				)
+    			.andDo(print())
+    			.andExpect(status().is4xxClientError()
+        		);
+    }
+    
+    @Test
+    public void findStock_() throws Exception {
+    	HttpHeaders httpHeaders = getHeaders();
+    	mvc.perform(get(findStockURI,3555)
+        		.headers(httpHeaders))
+    			.andDo(print())
+    			.andExpect(status().is4xxClientError()
+        		);
+    }
+    
+   
+}
+--------------payconiq-nl-ecommerce.postman_collection
+
+{
+	"variables": [],
+	"info": {
+		"name": "payconiq-nl-ecommerce",
+		"_postman_id": "9ec6856f-45bf-86c2-8d36-9ac82010ab43",
+		"description": "",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "listStocks",
+			"request": {
+				"url": "localhost:8080/ecommerce/api/stocks/",
+				"method": "GET",
+				"header": [],
+				"body": {},
+				"description": ""
+			},
+			"response": []
+		},
+		{
+			"name": "createStock",
+			"request": {
+				"url": "localhost:8080/ecommerce/api/stocks/",
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"description": ""
+					},
+					{
+						"key": "uuid",
+						"value": "vijay3434",
+						"description": ""
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "\t{\n        \"id\":1012,\n        \"name\": \"ATT\",\n        \"currentPrice\": 201.8,\n        \"timestamp\": \"2019-05-09 01:36:53\"\n        \n\t}"
+				},
+				"description": ""
+			},
+			"response": []
+		},
+		{
+			"name": "updateStock",
+			"request": {
+				"url": "localhost:8080/ecommerce/api/stocks/101",
+				"method": "PUT",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"description": ""
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "\t{\n\t\t\"id\": 101,\n        \"name\": \"BNP Fortis1\",\n        \"currentPrice\": 202.8,\n        \"timestamp\": \"2019-05-09 01:36:53\"\n\t}"
+				},
+				"description": ""
+			},
+			"response": []
+		},
+		{
+			"name": "findStock",
+			"request": {
+				"url": "localhost:8080/ecommerce/api/stocks/104",
+				"method": "GET",
+				"header": [],
+				"body": {},
+				"description": ""
+			},
+			"response": []
+		}
+	]
+}
+
+------pom.xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.payconiq.ecommerce</groupId>
+	<artifactId>payconiq-nl-ms-ecommerce</artifactId>
+	<version>1.0.0</version>
+	<packaging>jar</packaging>
+
+	<name>payconiq-nl-ms-ecommerce</name>
+
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>2.1.2.RELEASE</version>
+	</parent>
+
+	<properties>
+		<java.version>1.8</java.version>
+		<h2.version>1.4.187</h2.version>
+	</properties>
+
+	<dependencies>
+
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-freemarker</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-lang3</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-aspects</artifactId>
+		</dependency>
+
+
+		<!-- lombok -->
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<!-- test -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+		</plugins>
+	</build>
+
+	<repositories>
+		<!-- Project specific libraries from Maven/payconiq central repo -->
+		<repository>
+			<id>central</id>
+			<name>Maven Repository Switchboard</name>
+			<url>http://repo1.maven.org/maven2</url>
+		</repository>
+
+	</repositories>
+
+	<pluginRepositories>
+		<pluginRepository>
+			<id>central</id>
+			<name>Maven Repository Switchboard</name>
+			<url>http://repo1.maven.org/maven2</url>
+		</pluginRepository>
+	</pluginRepositories>
+
+
+</project>
+-------
+
+--------UI-----
+app.js
+
+var app = angular.module('crudApp',['ui.router','ngStorage']);
+
+app.constant('urls', {
+    BASE: 'http://localhost:8080/ecommerce',
+    STOCK_SERVICE_API : 'http://localhost:8080/ecommerce/api/stocks/'
+});
+
+app.config(['$stateProvider', '$urlRouterProvider',
+    function($stateProvider, $urlRouterProvider) {
+
+        $stateProvider
+            .state('home', {
+                url: '/',
+                templateUrl: 'partials/list',
+                controller:'StockController',
+                controllerAs:'ctrl',
+                resolve: {
+                    stocks: function ($q, StockService) {
+                        console.log('Load all stocks');
+                        var deferred = $q.defer();
+                        StockService.loadAllStocks().then(deferred.resolve, deferred.resolve);
+                        return deferred.promise;
+                    }
+                }
+            });
+        $urlRouterProvider.otherwise('/');
+    }]);
+
+----StockController.js
+
+'use strict';
+
+angular.module('crudApp').controller('StockController',
+    ['StockService', '$scope',  function( StockService, $scope) {
+
+        var self = this;
+        self.stock = {};
+        self.stocks=[];
+
+        self.submit = submit;
+        self.getAllStocks = getAllStocks;
+        self.createStock = createStock;
+        self.updateStock = updateStock;
+        self.editStock = editStock;
+        self.reset = reset;
+
+        self.successMessage = '';
+        self.errorMessage = '';
+        self.done = false;
+
+        self.onlyIntegers = /^\d+$/;
+        self.onlyNumbers = /^\d+([,.]\d+)?$/;
+        self.onlyText = /^[a-zA-Z]+$/;
+        self.digitsOrDecimals=/^[+-]?((\d+(\.\d*)?)|(\.\d+))$/;
+        
+
+        function submit() {
+            console.log('Submitting');
+            if (self.stock.id === undefined || self.stock.id === null) {
+                console.log('Saving New Stock', self.stock);
+                createStock(self.stock);
+            } else {
+                updateStock(self.stock, self.stock.id);
+                console.log('Stock updated with id ', self.stock.id);
+            }
+        }
+
+        function createStock(stock) {
+            console.log('About to create stock');
+            StockService.createStock(stock)
+                .then(
+                    function (response) {
+                        console.log('Stock created successfully');
+                        self.successMessage = 'Stock created successfully';
+                        self.errorMessage='';
+                        self.done = true;
+                        self.stock={};
+                        $scope.myForm.$setPristine();
+                    },
+                    function (errResponse) {
+                        console.error('Error while creating Stock');
+                        self.errorMessage = 'Error while creating Stock: ' + errResponse.data.errorMessage;
+                        self.successMessage='';
+                    }
+                );
+        }
+
+
+        function updateStock(stock, id){
+            console.log('About to update stock');
+            StockService.updateStock(stock, id)
+                .then(
+                    function (response){
+                        console.log('Stock updated successfully');
+                        self.successMessage='Stock updated successfully';
+                        self.errorMessage='';
+                        self.done = true;
+                        $scope.myForm.$setPristine();
+                    },
+                    function(errResponse){
+                        console.error('Error while updating Stock');
+                        self.errorMessage='Error while updating Stock '+errResponse.data;
+                        self.successMessage='';
+                    }
+                );
+        }
+
+
+
+
+
+        function getAllStocks(){
+            return StockService.getAllStocks();
+        }
+
+        function editStock(id) {
+            self.successMessage='';
+            self.errorMessage='';
+            StockService.getStock(id).then(
+                function (stock) {
+                    self.stock = stock;
+                },
+                function (errResponse) {
+                    console.error('Error while removing stock ' + id + ', Error :' + errResponse.data);
+                }
+            );
+        }
+        function reset(){
+            self.successMessage='';
+            self.errorMessage='';
+            self.stock={};
+            $scope.myForm.$setPristine(); //reset Form
+        }
+    }
+
+
+    ]);
+    
+    ---------StockService.js
+    'use strict';
+
+angular.module('crudApp').factory('StockService',
+    ['$localStorage', '$http', '$q', 'urls',
+        function ($localStorage, $http, $q, urls) {
+
+            var factory = {
+                loadAllStocks: loadAllStocks,
+                getAllStocks: getAllStocks,
+                getStock: getStock,
+                createStock: createStock,
+                updateStock: updateStock
+            };
+
+            return factory;
+
+            function loadAllStocks() {
+                console.log('Fetching all stocks');
+                var deferred = $q.defer();
+                $http.get(urls.STOCK_SERVICE_API)
+                    .then(
+                        function (response) {
+                            console.log('Fetched successfully all stocks');
+                            $localStorage.stocks = response.data;
+                            deferred.resolve(response);
+                        },
+                        function (errResponse) {
+                            console.error('Error while loading stocks');
+                            deferred.reject(errResponse);
+                        }
+                    );
+                return deferred.promise;
+            }
+
+            function getAllStocks(){
+                return $localStorage.stocks;
+            }
+
+            function getStock(id) {
+                console.log('Fetching Stock with id :'+id);
+                var deferred = $q.defer();
+                $http.get(urls.STOCK_SERVICE_API + id)
+                    .then(
+                        function (response) {
+                            console.log('Fetched successfully Stock with id :'+id);
+                            deferred.resolve(response.data);
+                        },
+                        function (errResponse) {
+                            console.error('Error while loading Stock with id :'+id);
+                            deferred.reject(errResponse);
+                        }
+                    );
+                return deferred.promise;
+            }
+
+            function createStock(stock) {
+                console.log('Creating Stock');
+                var deferred = $q.defer();
+                $http.post(urls.STOCK_SERVICE_API, stock)
+                    .then(
+                        function (response) {
+                            loadAllStocks();
+                            deferred.resolve(response.data);
+                        },
+                        function (errResponse) {
+                           console.error('Error while creating Stock : '+errResponse.data.errorMessage);
+                           deferred.reject(errResponse);
+                        }
+                    );
+                return deferred.promise;
+            }
+
+            function updateStock(stock, id) {
+                console.log('Updating Stock with id '+id);
+                var deferred = $q.defer();
+                $http.put(urls.STOCK_SERVICE_API + id, stock)
+                    .then(
+                        function (response) {
+                            loadAllStocks();
+                            deferred.resolve(response.data);
+                        },
+                        function (errResponse) {
+                            console.error('Error while updating Stock with id :'+id);
+                            deferred.reject(errResponse);
+                        }
+                    );
+                return deferred.promise;
+            }
+
+            function removeStock(id) {
+                console.log('Removing Stock with id '+id);
+                var deferred = $q.defer();
+                $http.delete(urls.STOCK_SERVICE_API + id)
+                    .then(
+                        function (response) {
+                            loadAllStocks();
+                            deferred.resolve(response.data);
+                        },
+                        function (errResponse) {
+                            console.error('Error while removing Stock with id :'+id);
+                            deferred.reject(errResponse);
+                        }
+                    );
+                return deferred.promise;
+            }
+
+        }
+    ]);
+    
+    -------------
+    ------templates
+    ------error.ftl
+    <!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <link rel="stylesheet" type="text/css" href="css/bootstrap.css" />
+</head>
+<body>
+	<div class="container">
+	    <div class="jumbotron alert-danger">
+			<h1>Oops. Something went wrong</h1>
+			<h2>${status} ${error}</h2>
+	    </div>
+	</div>
+</body>
+
+</html>
+
+
+------index.ftl
+
+<!DOCTYPE html>
+
+<html lang="en" ng-app="crudApp">
+    <head>
+        <title>${title}</title>
+        <link href="css/bootstrap.css" rel="stylesheet"/>
+        <link href="css/app.css" rel="stylesheet"/>
+    </head>
+    <body>
+
+        <div ui-view></div>
+        <script src="js/lib/angular.min.js" ></script>
+        <script src="js/lib/angular-ui-router.min.js" ></script>
+        <script src="js/lib/localforage.min.js" ></script>
+        <script src="js/lib/ngStorage.min.js"></script>
+        <script src="js/app/app.js"></script>
+        <script src="js/app/StockService.js"></script>
+        <script src="js/app/StockController.js"></script>
+    </body>
+</html>
+
+
+---list.ftl
+<div class="generic-container">
+    <div class="panel panel-default">
+        <!-- Default panel contents -->
+        <div class="panel-heading"><span class="lead">Stock </span></div>
+		<div class="panel-body">
+	        <div class="formcontainer">
+	            <div class="alert alert-success" role="alert" ng-if="ctrl.successMessage">{{ctrl.successMessage}}</div>
+	            <div class="alert alert-danger" role="alert" ng-if="ctrl.errorMessage">{{ctrl.errorMessage}}</div>
+	            <form ng-submit="ctrl.submit()" name="myForm" class="form-horizontal">
+	                <input type="hidden" ng-model="ctrl.stock.id" />
+	                <div class="row">
+	                    <div class="form-group col-md-12">
+	                        <label class="col-md-2 control-lable" for="stockname">Name</label>
+	                        <div class="col-md-7">
+	                            <input type="text" ng-model="ctrl.stock.name" id="stockname" class="stockname form-control input-sm" placeholder="Enter stock name" required ng-minlength="2" ng-pattern="ctrl.onlyText"/>
+	                        </div>
+	                    </div>
+	                </div>
+
+
+	                <div class="row">
+	                    <div class="form-group col-md-12">
+	                        <label class="col-md-2 control-lable" for="currentPrice">CurrentPrice</label>
+	                        <div class="col-md-7">
+	                            <input type="text" ng-model="ctrl.stock.currentPrice" id="currentPrice" class="form-control input-sm" placeholder="Enter current price." required ng-pattern="ctrl.digitsOrDecimals" />
+	                        </div>
+	                    </div>
+	                </div>
+
+	                <div class="row">
+	                    <div class="form-actions floatRight">
+	                        <input type="submit"  value="{{!ctrl.stock.id ? 'Add' : 'Update'}}" class="btn btn-primary btn-sm" ng-disabled="myForm.$invalid || myForm.$pristine">
+	                        <button type="button" ng-click="ctrl.reset()" class="btn btn-warning btn-sm" ng-disabled="myForm.$pristine">Reset Form</button>
+	                    </div>
+	                </div>
+	            </form>
+    	    </div>
+		</div>	
+    </div>
+    <div class="panel panel-default">
+        <!-- Default panel contents -->
+        <div class="panel-heading"><span class="lead">List of Stocks </span></div>
+		<div class="panel-body">
+			<div class="table-responsive">
+		        <table class="table table-hover">
+		            <thead>
+		            <tr>
+		                <th>ID</th>
+		                <th>NAME</th>
+		                <th>CURRENT PRICE</th>
+		                <th>LAST UPDATE</th>
+		                <th width="100"></th>
+		                <th width="100"></th>
+		            </tr>
+		            </thead>
+		            <tbody>
+		            <tr ng-repeat="u in ctrl.getAllStocks()">
+		                <td>{{u.id}}</td>
+		                <td>{{u.name}}</td>
+		                <td>{{u.currentPrice}}</td>
+		                <td>{{u.timestamp}}</td>
+		                <td><button type="button" ng-click="ctrl.editStock(u.id)" class="btn btn-success custom-width">Edit</button></td>
+		            </tr>
+		            </tbody>
+		        </table>		
+			</div>
+		</div>
+    </div>
+</div>
+
+
+-----
+
+
